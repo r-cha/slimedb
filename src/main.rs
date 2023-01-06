@@ -203,7 +203,7 @@ fn main() -> io::Result<()> {
                 }
             }
         }
-        // this is a test
+        // this is another test
         // Process statements
         let mut statement = Statement::default();
         match prepare_statement(input, &mut statement) {
