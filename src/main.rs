@@ -1,65 +1,45 @@
 #![allow(dead_code)]
 #![allow(unused_must_use)]
 
-use serde::{Deserialize, Serialize};
 use std::io;
 use std::io::Write;
 
 mod meta;
 
-const USERNAME_LENGTH: usize = 32;
-const EMAIL_LENGTH: usize = 32; // TODO: idk man, nothin works for 255
+const ROWS_PER_PAGE: usize = 32;
+const TABLE_MAX_PAGES: usize = 32;
+const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct Row {
     id: u32,
-    username: [char; USERNAME_LENGTH],
-    email: [char; EMAIL_LENGTH],
+    username: [u8; 32],
+    email: [u8; 255],
 }
-
-// src: https://stackoverflow.com/a/70222282
-macro_rules! size_of_attribute {
-    ($s:ident :: $attr:ident) => {{
-        let m = core::mem::MaybeUninit::<$s>::uninit();
-        // TODO: Understand this
-        let p = unsafe { core::ptr::addr_of!((*(&m as *const _ as *const $s)).$attr) };
-
-        const fn size_of_raw<T>(_: *const T) -> usize {
-            core::mem::size_of::<T>()
-        }
-        size_of_raw(p)
-    }};
-}
-const ID_SIZE: usize = size_of_attribute!(Row::id);
-const USERNAME_SIZE: usize = size_of_attribute!(Row::username);
-const EMAIL_SIZE: usize = size_of_attribute!(Row::email);
-const ID_OFFSET: usize = 0;
-const USERNAME_OFFSET: usize = ID_OFFSET + ID_SIZE;
-const EMAIL_OFFSET: usize = USERNAME_OFFSET + USERNAME_SIZE;
-const ROW_SIZE: usize = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 
 impl Default for Row {
-    fn default() -> Row {
-        Row {
+    fn default() -> Self {
+        Self {
             id: 0,
-            username: ['0'; USERNAME_LENGTH],
-            email: ['0'; EMAIL_LENGTH],
+            username: [0; 32],
+            email: [0; 255],
         }
     }
 }
 
-const PAGE_SIZE: usize = 4096;
-const TABLE_MAX_PAGES: usize = 32; // Arbitrary
-const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
-const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
-#[derive(Default)]
 struct Page {
-    // TODO: I don't think this works the same as the C code because
-    // `&rows` is the memory location, not `&pages`?
-    // But for now it works and makes things easy.
     rows: [Row; ROWS_PER_PAGE],
 }
 
+impl Default for Page {
+    fn default() -> Self {
+        Self {
+            rows: [Row::default(); ROWS_PER_PAGE],
+        }
+    }
+}
+
+/// Table is a struct representing a Table in the database
 #[derive(Default)]
 struct Table {
     num_rows: usize,
@@ -67,18 +47,18 @@ struct Table {
 }
 
 impl Table {
-    fn row_slot(mut self, row_num: usize) -> *mut Row {
+    /// row_slot returns a mutable pointer to the row at the given row_num
+    fn row_slot<'a>(&'a mut self, row_num: usize) -> &'a mut Row {
         let page_num = row_num / ROWS_PER_PAGE;
-        let mut page = match self.pages[page_num] {
-            Some(p) => p,
-            None => {
-                let p = Page::default();
-                self.pages[page_num] = Some(p);
-                p
-            }
-        };
         let row_offset = row_num % ROWS_PER_PAGE;
-        page.rows[row_offset]
+
+        if self.pages[page_num].is_none() {
+            self.pages[page_num] = Some(Page::default());
+        }
+
+        let page = self.pages[page_num].as_mut().unwrap();
+        let row = &mut page.rows[row_offset];
+        row
     }
 }
 
@@ -112,16 +92,13 @@ fn prepare_statement(input: &str, mut statement: &mut Statement) -> PrepareResul
         ["insert", id, username, email] => {
             statement.type_ = StatementType::InsertStatement;
             statement.row_to_insert.id = id.parse().unwrap();
-            statement.row_to_insert.username = username
-                .chars()
-                .collect::<Vec<char>>()
-                .try_into()
-                .expect("username length"); // TODO: Safely unwrap/pad/clamp
-            statement.row_to_insert.email = email
-                .chars()
-                .collect::<Vec<char>>()
-                .try_into()
-                .expect("email length");
+
+            let username_chars: Vec<u8> = username.bytes().collect();
+            let email_chars: Vec<u8> = email.bytes().collect();
+
+            statement.row_to_insert.username[..username_chars.len()]
+                .copy_from_slice(&username_chars);
+            statement.row_to_insert.email[..email_chars.len()].copy_from_slice(&email_chars);
         }
         ["select", ..] => statement.type_ = StatementType::SelectStatement,
         _ => return PrepareResult::PrepareUnrecognizedStatement,
@@ -135,32 +112,33 @@ enum ExecuteResult {
     ExecuteSuccess,
 }
 
-fn execute_insert(statement: Statement, table: Table) -> ExecuteResult {
+fn execute_insert(statement: Statement, table: &mut Table) -> ExecuteResult {
     use crate::ExecuteResult::*;
 
-    if table.num_rows >= TABLE_MAX_ROWS.try_into().unwrap() {
+    if table.num_rows >= TABLE_MAX_ROWS {
         return ExecuteTableFull;
     }
 
-    let row_to_insert: *const Row = &(statement.row_to_insert);
-    let loc: mut Row = table.row_slot(table.num_rows);
+    let row_to_insert: &Row = &statement.row_to_insert;
+    let loc: &mut Row = table.row_slot(table.num_rows);
 
-    row_to_insert.copy_to(loc, count);
+    *loc = *row_to_insert;
     table.num_rows += 1;
 
     ExecuteSuccess
 }
 
-fn execute_select(statement: Statement, table: Table) {
-    let mut row: Row;
+fn execute_select(statement: Statement, table: &mut Table) {
     let nrows = table.num_rows;
     for n in 0..nrows {
-        row = table.row_slot(n);
-        println!("{}", row);
+        let row = table.row_slot(n);
+        println!("{:?}", row);
     }
+    // a noop for now to use `statement`
+    statement.type_;
 }
 
-fn execute_statement(statement: Statement, table: Table) {
+fn execute_statement(statement: Statement, table: &mut Table) {
     match statement.type_ {
         StatementType::InsertStatement => {
             println!("This is where we insert.");
@@ -175,6 +153,10 @@ fn execute_statement(statement: Statement, table: Table) {
 }
 
 fn main() -> io::Result<()> {
+    // Build the base table really quick
+    // TODO: let statements specify a table?
+    let mut table = Table::default();
+
     // Greet user
     println!("Booting 🦠db.");
     fn print_prompt() {
@@ -208,7 +190,7 @@ fn main() -> io::Result<()> {
         let mut statement = Statement::default();
         match prepare_statement(input, &mut statement) {
             PrepareResult::PrepareSuccess => {
-                execute_statement(statement);
+                execute_statement(statement, &mut table);
                 println!("Executed.")
             }
             PrepareResult::PrepareUnrecognizedStatement => {
