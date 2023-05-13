@@ -6,7 +6,6 @@ pub enum CommandResult {
 }
 
 pub fn do_command(input: &str) -> CommandResult {
-    use crate::meta::CommandResult::*;
     let v: Vec<&str> = input.split(" ").collect();
 
     match &v[..] {
@@ -14,6 +13,6 @@ pub fn do_command(input: &str) -> CommandResult {
             println!("Exiting.");
             process::exit(0);
         }
-        _ => return UnrecognizedCommand,
+        _ => return CommandResult::UnrecognizedCommand,
     }
 }
