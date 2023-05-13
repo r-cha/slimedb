@@ -100,6 +100,7 @@ struct Statement {
 
 enum PrepareResult {
     PrepareSuccess,
+    PrepareSyntaxError,
     PrepareUnrecognizedStatement,
 }
 
@@ -109,7 +110,10 @@ fn prepare_statement(input: &str, mut statement: &mut Statement) -> PrepareResul
     match &v[..] {
         ["insert", id, username, email] => {
             statement.type_ = StatementType::InsertStatement;
-            statement.row_to_insert.id = id.parse().unwrap();
+            statement.row_to_insert.id = match id.parse() {
+                Ok(n) => n,
+                Err(_) => return PrepareResult::PrepareSyntaxError,
+            };
 
             let username_chars: Vec<u8> = username.bytes().collect();
             let email_chars: Vec<u8> = email.bytes().collect();
@@ -128,13 +132,12 @@ fn prepare_statement(input: &str, mut statement: &mut Statement) -> PrepareResul
 enum ExecuteResult {
     ExecuteTableFull,
     ExecuteSuccess,
+    ExecuteFailed,
 }
 
 fn execute_insert(statement: Statement, table: &mut Table) -> ExecuteResult {
-    use crate::ExecuteResult::*;
-
     if table.num_rows >= TABLE_MAX_ROWS {
-        return ExecuteTableFull;
+        return ExecuteResult::ExecuteTableFull;
     }
 
     let row_to_insert: &Row = &statement.row_to_insert;
@@ -143,10 +146,10 @@ fn execute_insert(statement: Statement, table: &mut Table) -> ExecuteResult {
     *loc = *row_to_insert;
     table.num_rows += 1;
 
-    ExecuteSuccess
+    ExecuteResult::ExecuteSuccess
 }
 
-fn execute_select(statement: Statement, table: &mut Table) {
+fn execute_select(statement: Statement, table: &mut Table) -> ExecuteResult {
     let nrows = table.num_rows;
     for n in 0..nrows {
         let row = table.row_slot(n);
@@ -154,25 +157,24 @@ fn execute_select(statement: Statement, table: &mut Table) {
     }
     // a noop for now to use `statement`
     statement.type_;
+
+    ExecuteResult::ExecuteSuccess
 }
 
-fn execute_statement(statement: Statement, table: &mut Table) {
+fn execute_statement(statement: Statement, table: &mut Table) -> ExecuteResult {
     match statement.type_ {
         StatementType::InsertStatement => {
-            println!("This is where we insert.");
-            execute_insert(statement, table);
+            return execute_insert(statement, table);
         }
         StatementType::SelectStatement => {
-            println!("This is where we select.");
-            execute_select(statement, table);
+            return execute_select(statement, table);
         }
-        _ => println!("Panic..."),
+        StatementType::UnrecognizedStatement => return ExecuteResult::ExecuteFailed,
     }
 }
 
 fn main() -> io::Result<()> {
     // Build the base table really quick
-    // TODO: let statements specify a table?
     let mut table = Table::default();
 
     // Greet user
@@ -207,9 +209,13 @@ fn main() -> io::Result<()> {
         // Process statements
         let mut statement = Statement::default();
         match prepare_statement(input, &mut statement) {
-            PrepareResult::PrepareSuccess => {
-                execute_statement(statement, &mut table);
-                println!("Executed.")
+            PrepareResult::PrepareSuccess => match execute_statement(statement, &mut table) {
+                ExecuteResult::ExecuteSuccess => println!("Executed."),
+                ExecuteResult::ExecuteTableFull => println!("Error: Table full."),
+                ExecuteResult::ExecuteFailed => println!("Error: Execute failed."),
+            },
+            PrepareResult::PrepareSyntaxError => {
+                println!("Syntax error. Could not parse statement.")
             }
             PrepareResult::PrepareUnrecognizedStatement => {
                 println!("Unrecognized keyword at start of {}", input);
