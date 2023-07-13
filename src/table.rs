@@ -1,14 +1,14 @@
 use crate::page::{Page, ROWS_PER_PAGE};
 use crate::row::Row;
+use crate::pager::{Pager, TABLE_MAX_PAGES};
 
-const TABLE_MAX_PAGES: usize = 32;
 pub const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 /// Table is a struct representing a Table in the database
 #[derive(Default)]
 pub struct Table {
     pub num_rows: usize,
-    pub pages: [Option<Page>; TABLE_MAX_PAGES],
+    pub pages: Pager,
 }
 
 impl Table {
