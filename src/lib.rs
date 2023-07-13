@@ -3,6 +3,7 @@ mod meta;
 mod page;
 mod row;
 mod statement;
+mod pager;
 pub mod table;
 
 use crate::execute::{execute_statement, ExecuteResult};
